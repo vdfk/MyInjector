@@ -59,6 +59,13 @@ import io.github.a13e300.myinjector.arch.setObj
 import io.github.a13e300.myinjector.arch.switchPreference
 import io.github.a13e300.myinjector.arch.toObfsInfo
 import io.github.a13e300.myinjector.bridge.HookParam
+import io.github.a13e300.myinjector.ui.ModernInjectedDialogAction
+import io.github.a13e300.myinjector.ui.ModernSettingsPalette
+import io.github.a13e300.myinjector.ui.dp
+import io.github.a13e300.myinjector.ui.modernInjectedButton
+import io.github.a13e300.myinjector.ui.modernInjectedMessageView
+import io.github.a13e300.myinjector.ui.modernInjectedScrollContent
+import io.github.a13e300.myinjector.ui.showModernInjectedDialog
 import org.json.JSONObject
 import java.io.File
 import java.io.InputStream
@@ -617,6 +624,40 @@ class ExtractVideoLink : MyDynHook("extractVideoLink") {
                                 return super.getSystemService(name)
                             }
                         }
+                        val palette = ModernSettingsPalette.from(dialogCtx)
+                        val links = LinearLayout(dialogCtx).apply {
+                            orientation = LinearLayout.VERTICAL
+                            urlInfoList.forEach { info ->
+                                runCatching {
+                                    val url = info.getObjAs<String>("url")
+                                    val desc = info.getObjAs<String>("desc")
+                                    val button = modernInjectedButton(dialogCtx, palette, desc).apply {
+                                        setOnClickListener {
+                                            dialogCtx.getSystemService(ClipboardManager::class.java)
+                                                .setPrimaryClip(ClipData.newPlainText("", url))
+                                        }
+                                    }
+                                    addView(
+                                        button,
+                                        LinearLayout.LayoutParams(
+                                            ViewGroup.LayoutParams.MATCH_PARENT,
+                                            dialogCtx.dp(46),
+                                        ).apply {
+                                            bottomMargin = dialogCtx.dp(8)
+                                        },
+                                    )
+                                }.onFailure { t ->
+                                    logE("add url btn $info", t)
+                                }
+                            }
+                        }
+                        showModernInjectedDialog(
+                            dialogCtx,
+                            "\u89c6\u9891\u94fe\u63a5",
+                            modernInjectedScrollContent(dialogCtx, links, 0.45f),
+                            listOf(ModernInjectedDialogAction("\u5173\u95ed")),
+                        )
+                        return@runCatching
                         AlertDialog.Builder(dialogCtx)
                             .setTitle("视频链接")
                             .setView(ScrollView(dialogCtx).also { sv ->
@@ -808,6 +849,70 @@ class XhsSettingsDialog(ctx: Context) : SettingDialog(ctx) {
                 summary = "在视频页面显示悬浮按钮，点击可提取视频链接"
             )
         }
+    }
+
+    override fun onConfigureActions(actions: MutableList<ModernInjectedDialogAction>) {
+        if (XhsHandler.hookErrors.isEmpty()) return
+        val errors = XhsHandler.hookErrors.map {
+            "${it.key}:\n${it.value}"
+        }.joinToString("\n")
+        actions.add(
+            0,
+            ModernInjectedDialogAction("\u67e5\u770b\u9519\u8bef", dismissAfterClick = false) {
+                showModernInjectedDialog(
+                    context,
+                    "\u9519\u8bef\u8be6\u60c5",
+                    modernInjectedScrollContent(
+                        context,
+                        modernInjectedMessageView(context, errors),
+                        0.45f,
+                    ),
+                    listOf(
+                        ModernInjectedDialogAction("\u5206\u4eab") {
+                            thread {
+                                runCatching {
+                                    val f = File(context.filesDir, "myinjector-error.txt")
+                                    f.writeText(errors)
+                                    logD("wrote file $f")
+                                    val uri = XhsHandler.fileProviderClass.callS(
+                                        "getUriForFile",
+                                        context,
+                                        "com.xingin.xhs.provider",
+                                        f
+                                    ) as Uri
+                                    logD("uri $uri")
+                                    context.startActivity(
+                                        Intent.createChooser(
+                                            Intent(Intent.ACTION_SEND)
+                                                .putExtra(Intent.EXTRA_STREAM, uri)
+                                                .setType("text/plain"),
+                                            ""
+                                        )
+                                            .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    )
+                                }.onFailure { t ->
+                                    logE("share failed: ", t)
+                                    runCatching {
+                                        activityCtx.findBaseActivity().runOnUiThread {
+                                            Toast.makeText(
+                                                context,
+                                                "\u5206\u4eab\u5931\u8d25\uff0c\u8bf7\u5c1d\u8bd5\u590d\u5236",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        ModernInjectedDialogAction("\u590d\u5236") {
+                            context.getSystemService(ClipboardManager::class.java)
+                                .setPrimaryClip(ClipData.newPlainText("", errors))
+                        },
+                        ModernInjectedDialogAction("\u5173\u95ed"),
+                    ),
+                )
+            },
+        )
     }
 
     override fun onConfigureDialog(builder: AlertDialog.Builder) {

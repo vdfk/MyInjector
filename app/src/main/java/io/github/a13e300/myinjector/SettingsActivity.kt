@@ -1,8 +1,7 @@
 package io.github.a13e300.myinjector
 
-import android.annotation.SuppressLint
 import android.app.Activity
-import android.app.AlertDialog
+import android.app.Dialog
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -11,15 +10,17 @@ import android.content.pm.PackageManager
 import android.content.res.XmlResourceParser
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
 import android.text.InputType
 import android.view.Gravity
-import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.view.Window
 import android.view.WindowInsets
-import android.widget.Button
+import android.view.WindowManager
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -324,29 +325,51 @@ class SettingsActivity : Activity() {
                 InputType.TYPE_TEXT_FLAG_MULTI_LINE or
                 InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
             setSelectAllOnFocus(false)
-        }
-
-        val container = FrameLayout(this).apply {
-            setPadding(dp(20), dp(8), dp(20), 0)
-            addView(
-                editText,
-                FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                )
+            setTextColor(palette.title)
+            setHintTextColor(palette.summary)
+            setTextSizeDp(13.2f)
+            background = roundedBackground(
+                if (palette.isLight) Color.rgb(244, 247, 251) else palette.button,
+                18,
             )
+            setPadding(dp(16), dp(12), dp(16), dp(12))
         }
 
-        AlertDialog.Builder(this)
-            .setTitle(item.title)
-            .setView(container)
-            .setPositiveButton(android.R.string.ok) { _, _ ->
-                prefs.edit().putString(item.key, editText.text.toString()).apply()
-                commitForSection(item.sectionKey)
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            item.helpText?.takeUnless { it.isBlank() }?.let { helpText ->
+                addView(textEditorHelpCard(helpText), matchWidthLayoutParams(bottom = 12))
             }
-            .setNegativeButton(android.R.string.cancel, null)
-            .show()
+            addView(editText, matchWidthLayoutParams())
+        }
+
+        showModernDialog(
+            title = item.title,
+            content = container,
+            actions = listOf(
+                ModernDialogAction("取消"),
+                ModernDialogAction("保存") {
+                    prefs.edit().putString(item.key, editText.text.toString()).apply()
+                    commitForSection(item.sectionKey)
+                },
+            ),
+        )
     }
+
+    private fun textEditorHelpCard(helpText: CharSequence): TextView =
+        TextView(this).apply {
+            text = helpText
+            setTextColor(palette.summary)
+            setTextSizeDp(13.2f)
+            setLineSpacing(dp(2).toFloat(), 1.0f)
+            includeFontPadding = true
+            setTextIsSelectable(true)
+            background = roundedBackground(
+                if (palette.isLight) Color.rgb(244, 247, 251) else palette.button,
+                18,
+            )
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+        }
 
     private fun handleAction(item: SettingsItemSpec.Action) {
         when (item.key) {
@@ -409,12 +432,15 @@ class SettingsActivity : Activity() {
                                 val key = parser.attr("key")
                                 val section = current
                                 if (key != null && section != null) {
+                                    val summary = parser.optionalTextAttr("summary")
+                                    val helpText = if (key in TEXT_HELP_CARD_KEYS) summary else null
                                     section.items.add(
                                         SettingsItemSpec.Text(
                                             sectionKey = section.key,
                                             key = key,
                                             title = parser.textAttr("title"),
-                                            summary = parser.optionalTextAttr("summary"),
+                                            summary = if (helpText == null) summary else null,
+                                            helpText = helpText,
                                         )
                                     )
                                 }
@@ -657,21 +683,27 @@ class SettingsActivity : Activity() {
         val pendingIntent =
             PendingIntent.getBroadcast(this, 1, intent, PendingIntent.FLAG_IMMUTABLE)
         val config = MiuiHomeConfig.newBuilder()
-            .setOpenAospSettings(prefs.getBoolean("miuiHomeOpenAospSettings", true))
-            .setDragKill(prefs.getBoolean("miuiHomeDragKill", true))
-            .setDisablePreLaunch(prefs.getBoolean("miuiHomeDisablePreLaunch", true))
+            .setOpenAospSettings(prefs.getBoolean("miuiHomeOpenAospSettings", false))
+            .setDragKill(prefs.getBoolean("miuiHomeDragKill", false))
+            .setDisablePreLaunch(prefs.getBoolean("miuiHomeDisablePreLaunch", false))
             .build()
         intent.putExtra("EXTRA_CREDENTIAL", pendingIntent)
         intent.putExtra("EXTRA_CONFIG", config.toByteArray())
         sendBroadcast(intent)
     }
 
-    @SuppressLint("SetTextI18n")
     private fun showHotUpdateDialog() {
-        val rootView =
-            LayoutInflater.from(this).inflate(R.layout.hot_update_dialog, null, false)
-
-        val tv = rootView.findViewById<TextView>(R.id.result_text)
+        val statusText = TextView(this).apply {
+            text = "准备检查"
+            setTextColor(palette.summary)
+            setTextSizeDp(13.2f)
+            includeFontPadding = true
+            background = roundedBackground(
+                if (palette.isLight) Color.rgb(244, 247, 251) else palette.button,
+                18,
+            )
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+        }
 
         fun command(name: String, args: Bundle.() -> Unit = {}, cb: (Int, Bundle?) -> Unit) {
             val intent = Intent("io.github.a13e300.myinjector.SYSTEM_SERVER_ENTRY")
@@ -694,58 +726,178 @@ class SettingsActivity : Activity() {
         }
 
         fun check() {
-            tv.text = "检查中……"
+            statusText.text = "检查中……"
             command("needUpdate") { code, _ ->
-                tv.post {
-                    tv.text = if (code == 1) "可更新" else "无需更新"
+                statusText.post {
+                    statusText.text = if (code == 1) "可更新" else "无需更新"
                 }
             }
         }
 
         fun update(force: Boolean) {
             command("reload", { putBoolean("force", force) }) { code, _ ->
-                tv.post {
-                    tv.text = if (code == 1) "重新加载成功" else "重新加载失败"
+                statusText.post {
+                    statusText.text = if (code == 1) "重新加载成功" else "重新加载失败"
                 }
             }
         }
 
-        rootView.findViewById<Button>(R.id.update_btn).setOnClickListener {
-            update(false)
-        }
-
-        rootView.findViewById<Button>(R.id.update_force_btn).setOnClickListener {
-            update(true)
-        }
-
-        rootView.findViewById<Button>(R.id.check_btn).setOnClickListener {
-            check()
-        }
-
-        rootView.findViewById<Button>(R.id.gc_btn).setOnClickListener {
-            command("gc") { code, _ ->
-                tv.post {
-                    tv.text = if (code == 0) "GC 成功" else "GC 失败"
-                }
-            }
-        }
-
-        rootView.findViewById<Button>(R.id.old_hook_btn).setOnClickListener {
-            command("reportOldHook") { code, data ->
-                val d = data?.getString("hooks") ?: ""
-                tv.post {
-                    tv.text = "旧模块：" + d.ifEmpty { "无" }
-                }
-            }
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(statusText, matchWidthLayoutParams(bottom = 12))
+            addView(modernDialogButton("检查更新") { check() }, matchWidthLayoutParams(bottom = 8))
+            addView(
+                modernDialogButton("主动 GC") {
+                    command("gc") { code, _ ->
+                        statusText.post {
+                            statusText.text = if (code == 0) "GC 成功" else "GC 失败"
+                        }
+                    }
+                },
+                matchWidthLayoutParams(bottom = 8),
+            )
+            addView(
+                modernDialogButton("查询旧模块") {
+                    command("reportOldHook") { _, data ->
+                        val hooks = data?.getString("hooks").orEmpty()
+                        statusText.post {
+                            statusText.text = "旧模块：" + hooks.ifEmpty { "无" }
+                        }
+                    }
+                },
+                matchWidthLayoutParams(bottom = 8),
+            )
+            addView(modernDialogButton("重新加载") { update(false) }, matchWidthLayoutParams(bottom = 8))
+            addView(modernDialogButton("强制重新加载") { update(true) }, matchWidthLayoutParams())
         }
 
         check()
 
-        AlertDialog.Builder(this)
-            .setTitle("热更新")
-            .setView(rootView)
-            .show()
+        showModernDialog(
+            title = "热更新",
+            content = content,
+            actions = listOf(ModernDialogAction("关闭")),
+        )
     }
+
+    private fun showModernDialog(
+        title: CharSequence,
+        content: View,
+        actions: List<ModernDialogAction>,
+    ) {
+        val dialog = Dialog(this)
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+        dialog.window?.apply {
+            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            setDimAmount(0.44f)
+            setGravity(Gravity.CENTER)
+            setWindowAnimations(0)
+            attributes = attributes.apply {
+                width = WindowManager.LayoutParams.MATCH_PARENT
+                height = WindowManager.LayoutParams.WRAP_CONTENT
+                gravity = Gravity.CENTER
+                dimAmount = 0.44f
+            }
+        }
+
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = palette.cardBackground(this@SettingsActivity)
+            setPadding(dp(24), dp(22), dp(24), dp(24))
+        }
+
+        card.addView(
+            TextView(this).apply {
+                text = title
+                setTextColor(palette.title)
+                setTextSizeDp(16f)
+                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                gravity = Gravity.CENTER
+                includeFontPadding = true
+            },
+            matchWidthLayoutParams(bottom = 16),
+        )
+
+        card.addView(content, matchWidthLayoutParams(bottom = 18))
+
+        val actionBar = LinearLayout(this).apply {
+            orientation = if (actions.size <= 2) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
+        }
+        actions.forEachIndexed { index, action ->
+            val button = modernDialogButton(action.title) {
+                action.onClick?.invoke()
+                dialog.dismiss()
+            }
+            val lp = if (actions.size <= 2) {
+                LinearLayout.LayoutParams(0, dp(46), 1f).apply {
+                    if (index > 0) marginStart = dp(10)
+                }
+            } else {
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    dp(46),
+                ).apply {
+                    if (index < actions.lastIndex) bottomMargin = dp(8)
+                }
+            }
+            actionBar.addView(button, lp)
+        }
+        card.addView(actionBar, matchWidthLayoutParams())
+
+        val outer = FrameLayout(this).apply {
+            minimumWidth = resources.displayMetrics.widthPixels
+            setPadding(dp(24), 0, dp(24), 0)
+            addView(
+                card,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.CENTER,
+                )
+            )
+        }
+
+        dialog.setContentView(
+            outer,
+            ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ),
+        )
+        dialog.show()
+        dialog.window?.setLayout(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+        )
+    }
+
+    private fun modernDialogButton(
+        title: CharSequence,
+        onClick: () -> Unit,
+    ): ModernActionButton =
+        ModernActionButton(this, palette, title).apply {
+            setOnClickListener { onClick() }
+        }
+
+    private fun matchWidthLayoutParams(bottom: Int = 0): LinearLayout.LayoutParams =
+        LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+        ).apply {
+            bottomMargin = dp(bottom)
+        }
+
+    private fun roundedBackground(color: Int, radius: Int): GradientDrawable =
+        GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(radius).toFloat()
+            setColor(color)
+        }
+
+    private data class ModernDialogAction(
+        val title: CharSequence,
+        val onClick: (() -> Unit)? = null,
+    )
 
     private data class SettingsSectionSpec(
         val key: String,
@@ -778,6 +930,7 @@ class SettingsActivity : Activity() {
             override val key: String,
             override val title: CharSequence,
             override val summary: CharSequence?,
+            val helpText: CharSequence?,
         ) : SettingsItemSpec()
 
         data class Action(
@@ -805,6 +958,11 @@ class SettingsActivity : Activity() {
     companion object {
         private const val PREFS_NAME = "system_server"
         private const val ANDROID_NS = "http://schemas.android.com/apk/res/android"
+
+        private val TEXT_HELP_CARD_KEYS = setOf(
+            "forceNewTaskRules",
+            "overrideStatusBarRules",
+        )
 
         private val APP_PACKAGES = listOf(
             "com.xingin.xhs",

@@ -9,7 +9,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.res.Resources
+import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
 import android.preference.ListPreference
 import android.preference.MultiSelectListPreference
@@ -25,11 +27,10 @@ import android.text.style.ForegroundColorSpan
 import android.text.style.StyleSpan
 import android.view.ContextThemeWrapper
 import android.view.View
+import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.BaseAdapter
-import android.widget.EditText
-import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ListAdapter
 import android.widget.ListView
@@ -41,11 +42,18 @@ import io.github.a13e300.myinjector.arch.forceSetSelection
 import io.github.a13e300.myinjector.arch.getObjAs
 import io.github.a13e300.myinjector.arch.hookAfter
 import io.github.a13e300.myinjector.arch.hookAllAfter
-import io.github.a13e300.myinjector.arch.inflateLayout
+import io.github.a13e300.myinjector.arch.ModernPreferenceStyleRegistry
 import io.github.a13e300.myinjector.arch.newInstAs
 import io.github.a13e300.myinjector.arch.restartApplication
 import io.github.a13e300.myinjector.arch.setObj
 import io.github.a13e300.myinjector.arch.sp2px
+import io.github.a13e300.myinjector.ui.ModernInjectedDialogAction
+import io.github.a13e300.myinjector.ui.ModernInjectedSearchBar
+import io.github.a13e300.myinjector.ui.ModernSettingsPalette
+import io.github.a13e300.myinjector.ui.dp
+import io.github.a13e300.myinjector.ui.modernInjectedMessageView
+import io.github.a13e300.myinjector.ui.showModernInjectedDialog
+import kotlin.math.min
 
 abstract class SettingDialog(val activityCtx: Context) : Preference.OnPreferenceChangeListener,
     Preference.OnPreferenceClickListener {
@@ -100,14 +108,34 @@ abstract class SettingDialog(val activityCtx: Context) : Preference.OnPreference
 
     fun search(text: String) {
         val preferences = if (text.isEmpty()) {
+            applyCardGrouping(prefScreen)
             searchItems.map { it.restore(); it.preference }
         } else {
             searchItems.sortedByDescending { it.calcScoreAndApplyHintBy(text) }
                 .filterNot { it.cacheScore == 0 }.map { it.preference }
+                .also { ModernPreferenceStyleRegistry.markCardRows(it) }
         }
         adapter.preferenceList = preferences
         adapter.notifyDataSetChanged()
         listView.forceSetSelection(0)
+    }
+
+    private fun applyCardGrouping(group: PreferenceGroup) {
+        if (group === prefScreen) {
+            ModernPreferenceStyleRegistry.clear()
+        }
+        val topLevelRows = mutableListOf<Preference>()
+        for (i in 0 until group.preferenceCount) {
+            val preference = group.getPreference(i)
+            if (preference is PreferenceGroup) {
+                ModernPreferenceStyleRegistry.markCardRows(topLevelRows)
+                topLevelRows.clear()
+                applyCardGrouping(preference)
+            } else {
+                topLevelRows.add(preference)
+            }
+        }
+        ModernPreferenceStyleRegistry.markCardRows(topLevelRows)
     }
 
     private fun retrieve(group: PreferenceGroup): List<SearchItem> = buildList {
@@ -214,7 +242,7 @@ abstract class SettingDialog(val activityCtx: Context) : Preference.OnPreference
             val endIdx = startIdx + hint.hint.length
             if (endIdx > length) return this
             val flags = Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
-            val hintColor = preference.context.getColor(R.color.text_search_hint)
+            val hintColor = ModernSettingsPalette.from(preference.context).accent
             val colorSpan = ForegroundColorSpan(hintColor)
             val boldSpan = StyleSpan(Typeface.BOLD)
             return SpannableStringBuilder(this).apply {
@@ -249,35 +277,62 @@ abstract class SettingDialog(val activityCtx: Context) : Preference.OnPreference
 
     private fun getContentView(): View {
         prefScreen = PreferenceScreen::class.java.newInstAs(context, null)
-        listView = ListView(context)
+        val palette = ModernSettingsPalette.from(context)
+        listView = ListView(context).apply {
+            divider = null
+            setSelector(ColorDrawable(Color.TRANSPARENT))
+            isDrawSelectorOnTop = false
+            cacheColorHint = Color.TRANSPARENT
+            setBackgroundColor(palette.background)
+            clipToPadding = false
+            setPadding(0, context.dp(6), 0, context.dp(6))
+            isVerticalFadingEdgeEnabled = true
+            setFadingEdgeLength(context.dp(21))
+        }
 
         prefScreen.run {
             onCreatePref(this)
         }
+        applyCardGrouping(prefScreen)
         prefScreen.bind(listView)
         searchItems = retrieve(prefScreen)
         adapter = listView.adapter as BaseAdapter
         val contentView = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
             )
         }
-        val searchBar = context.inflateLayout(R.layout.search_bar)
-        val editView = searchBar.findViewById<EditText>(R.id.search)
-        val clearView = searchBar.findViewById<View>(R.id.clear)
+        val searchBar = ModernInjectedSearchBar(context, palette)
+        val editView = searchBar.editText
+        fun clearSearchFocus() {
+            if (!editView.hasFocus()) return
+            editView.clearFocus()
+            context.getSystemService(InputMethodManager::class.java)
+                ?.hideSoftInputFromWindow(editView.windowToken, 0)
+        }
+        contentView.setOnClickListener {
+            clearSearchFocus()
+        }
+        listView.setOnTouchListener { _, _ ->
+            clearSearchFocus()
+            false
+        }
         searchBar.setOnClickListener {
             editView.requestFocus()
             context.getSystemService(InputMethodManager::class.java)
-                .showSoftInput(editView, 0)
+                ?.showSoftInput(editView, 0)
         }
         editView.addTextChangedListener(object : TextWatcher {
             override fun afterTextChanged(s: Editable?) {}
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(
                 s: CharSequence?, start: Int, before: Int, count: Int
-            ) = search(s?.toString()?.trim().orEmpty())
+            ) {
+                val query = s?.toString()?.trim().orEmpty()
+                search(query)
+            }
         })
         editView.setOnEditorActionListener { v, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_SEARCH) {
@@ -285,12 +340,28 @@ abstract class SettingDialog(val activityCtx: Context) : Preference.OnPreference
                 true
             } else false
         }
-        clearView.setOnClickListener {
-            editView.setText("")
-        }
-        contentView.addView(searchBar)
-        contentView.addView(listView)
+        contentView.addView(
+            searchBar,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ),
+        )
+        contentView.addView(
+            listView,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                min(
+                    context.resources.displayMetrics.heightPixels * 58 / 100,
+                    520.sp2px(context.resources).toInt(),
+                ),
+            ),
+        )
         return contentView
+    }
+
+    protected open fun onConfigureActions(actions: MutableList<ModernInjectedDialogAction>) {
+
     }
 
     protected open fun onConfigureDialog(builder: AlertDialog.Builder) {
@@ -301,6 +372,15 @@ abstract class SettingDialog(val activityCtx: Context) : Preference.OnPreference
         try {
             val activity = activityCtx.findBaseActivity()
             // activity.addModuleAssets(Entry.modulePath)
+            val actions = mutableListOf(
+                ModernInjectedDialogAction("\u8fd4\u56de"),
+                ModernInjectedDialogAction("\u91cd\u542f") {
+                    restartApplication(activity)
+                },
+            )
+            onConfigureActions(actions)
+            showModernInjectedDialog(context, "MyInjector", getContentView(), actions)
+            return
 
             AlertDialog.Builder(context).apply {
 
@@ -315,6 +395,20 @@ abstract class SettingDialog(val activityCtx: Context) : Preference.OnPreference
             }.show()
         } catch (e: Resources.NotFoundException) {
             logE("res:", e)
+            showModernInjectedDialog(
+                context,
+                "\u9700\u8981\u91cd\u542f",
+                modernInjectedMessageView(
+                    context,
+                    "\u7531\u4e8e\u52a0\u8f7d\u8d44\u6e90\u5931\u8d25\uff0c\u9700\u8981\u91cd\u542f\u5e94\u7528\u4ee5\u663e\u793a\u8bbe\u7f6e\u754c\u9762\u3002",
+                ),
+                listOf(
+                    ModernInjectedDialogAction("\u91cd\u542f") {
+                        restartApplication(activityCtx.findBaseActivity())
+                    },
+                ),
+            )
+            return
             AlertDialog.Builder(context)
                 .setTitle("需要重启")
                 .setMessage("由于加载资源失败，需要重启应用以显示设置界面。")

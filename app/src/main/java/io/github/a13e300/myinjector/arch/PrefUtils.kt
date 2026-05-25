@@ -2,7 +2,16 @@
 
 package io.github.a13e300.myinjector.arch
 
+import android.content.res.ColorStateList
 import android.content.Context
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
+import android.graphics.Typeface
+import android.graphics.drawable.Drawable
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
 import android.preference.Preference
 import android.preference.PreferenceCategory
 import android.preference.PreferenceGroup
@@ -10,7 +19,14 @@ import android.preference.PreferenceManager
 import android.preference.SwitchPreference
 import android.view.View
 import android.view.ViewGroup
+import android.widget.CompoundButton
+import android.widget.FrameLayout
 import android.widget.TextView
+import io.github.a13e300.myinjector.ui.ModernSettingsPalette
+import io.github.a13e300.myinjector.ui.ModernSwitchView
+import io.github.a13e300.myinjector.ui.dp
+import io.github.a13e300.myinjector.ui.setTextSizeDp
+import java.util.WeakHashMap
 
 fun setTextViewMultiLine(vg: ViewGroup) {
     for (i in 0 until vg.childCount) {
@@ -23,7 +39,258 @@ fun setTextViewMultiLine(vg: ViewGroup) {
     }
 }
 
+internal object ModernPreferenceStyleRegistry {
+    private val rows = WeakHashMap<Preference, RowStyle>()
+
+    fun clear() {
+        rows.clear()
+    }
+
+    fun markCardRows(preferences: List<Preference>) {
+        preferences.forEachIndexed { index, preference ->
+            rows[preference] = RowStyle(
+                first = index == 0,
+                last = index == preferences.lastIndex,
+            )
+        }
+    }
+
+    fun styleFor(preference: Preference): RowStyle =
+        rows[preference] ?: RowStyle(first = true, last = true)
+}
+
+internal data class RowStyle(
+    val first: Boolean,
+    val last: Boolean,
+)
+
+private fun applyModernPreferenceStyle(
+    view: View,
+    isCategory: Boolean = false,
+    rowStyle: RowStyle = RowStyle(first = true, last = true),
+    styleRoot: Boolean = true,
+) {
+    val palette = ModernSettingsPalette.from(view.context)
+    if (styleRoot) {
+        view.background = if (isCategory) {
+            null
+        } else {
+            PreferenceRowBackground(view.context, palette, rowStyle).withNativeRipple(
+                view.context,
+                palette,
+                rowStyle,
+            )
+        }
+        view.isPressed = false
+        view.jumpDrawablesToCurrentState()
+    }
+    if (!isCategory && styleRoot) {
+        view.minimumHeight = view.context.dp(58)
+        view.setPadding(view.context.dp(22), view.paddingTop, view.context.dp(22), view.paddingBottom)
+    } else if (isCategory && styleRoot) {
+        view.setPadding(view.paddingLeft, view.context.dp(18), view.paddingRight, view.context.dp(12))
+    }
+    if (view is ViewGroup) {
+        for (i in 0 until view.childCount) {
+            val child = view.getChildAt(i)
+            if (child is TextView) {
+                child.isSingleLine = false
+                child.includeFontPadding = true
+                when {
+                    isCategory -> {
+                        child.setTextColor(if (child.isEnabled) palette.accent else palette.summary)
+                        child.setTextSizeDp(13.2f)
+                        child.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                    }
+
+                    child.id == android.R.id.title -> {
+                        child.setTextColor(if (child.isEnabled) palette.title else palette.summary)
+                        child.setTextSizeDp(14.3f)
+                        child.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                    }
+
+                    child.id == android.R.id.summary -> {
+                        child.setTextColor(palette.summary)
+                        child.setTextSizeDp(12.8f)
+                        child.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
+                    }
+                }
+                child.alpha = if (child.isEnabled) 1f else 0.55f
+            } else {
+                applyModernPreferenceStyle(child, isCategory, rowStyle, styleRoot = false)
+            }
+        }
+    }
+}
+
+private class PreferenceRowBackground(
+    context: Context,
+    private val palette: ModernSettingsPalette,
+    private val rowStyle: RowStyle,
+) : Drawable() {
+    private val radius = context.dp(28).toFloat()
+    private val dividerInset = context.dp(22).toFloat()
+    private val dividerHeight = context.dp(1f).toFloat()
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = palette.surface
+        style = Paint.Style.FILL
+    }
+    private val dividerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = palette.divider
+        style = Paint.Style.FILL
+    }
+    private val rect = RectF()
+    private val radii: FloatArray = rowRadii(radius, rowStyle)
+
+    override fun draw(canvas: Canvas) {
+        rect.set(bounds)
+        val path = android.graphics.Path().apply {
+            addRoundRect(rect, radii, android.graphics.Path.Direction.CW)
+        }
+        canvas.drawPath(path, paint)
+        if (!rowStyle.last) {
+            canvas.drawRect(
+                bounds.left + dividerInset,
+                bounds.bottom - dividerHeight,
+                bounds.right - dividerInset,
+                bounds.bottom.toFloat(),
+                dividerPaint,
+            )
+        }
+    }
+
+    override fun setAlpha(alpha: Int) {
+        paint.alpha = alpha
+        dividerPaint.alpha = alpha
+    }
+
+    override fun setColorFilter(colorFilter: android.graphics.ColorFilter?) {
+        paint.colorFilter = colorFilter
+        dividerPaint.colorFilter = colorFilter
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun getOpacity(): Int = android.graphics.PixelFormat.TRANSLUCENT
+}
+
+private fun PreferenceRowBackground.withNativeRipple(
+    context: Context,
+    palette: ModernSettingsPalette,
+    rowStyle: RowStyle,
+): RippleDrawable {
+    val mask = GradientDrawable().apply {
+        shape = GradientDrawable.RECTANGLE
+        cornerRadii = rowRadii(context.dp(28).toFloat(), rowStyle)
+        setColor(Color.WHITE)
+    }
+    return RippleDrawable(ColorStateList.valueOf(palette.ripple), this, mask)
+}
+
+private fun rowRadii(radius: Float, rowStyle: RowStyle): FloatArray =
+    floatArrayOf(
+        if (rowStyle.first) radius else 0f,
+        if (rowStyle.first) radius else 0f,
+        if (rowStyle.first) radius else 0f,
+        if (rowStyle.first) radius else 0f,
+        if (rowStyle.last) radius else 0f,
+        if (rowStyle.last) radius else 0f,
+        if (rowStyle.last) radius else 0f,
+        if (rowStyle.last) radius else 0f,
+    )
+
+private fun ModernSwitchView.bindPreference(preference: SwitchPreferenceCompat) {
+    val canAnimate = boundPreferenceKey == preference.key
+    boundPreferenceKey = preference.key
+    onCheckedChangeListener = null
+    isEnabled = preference.isEnabled
+    isFocusable = false
+    alpha = if (preference.isEnabled) 1f else 0.55f
+    if (canAnimate) {
+        setChecked(preference.isChecked)
+    } else {
+        setCheckedImmediately(preference.isChecked)
+    }
+    onCheckedChangeListener = { checked ->
+        preference.updateFromModernSwitch(checked) {
+            setCheckedImmediately(preference.isChecked)
+        }
+    }
+}
+
+private fun replaceLegacySwitches(root: ViewGroup, preference: SwitchPreferenceCompat): ModernSwitchView? {
+    var modernSwitch: ModernSwitchView? = null
+    var i = 0
+    while (i < root.childCount) {
+        val child = root.getChildAt(i)
+        if (child is ModernSwitchView) {
+            child.bindPreference(preference)
+            modernSwitch = child
+            i++
+        } else if (child is CompoundButton) {
+            val replacement = ModernSwitchView(root.context, ModernSettingsPalette.from(root.context)).apply {
+                bindPreference(preference)
+            }
+            val lp = child.layoutParams ?: ViewGroup.LayoutParams(root.context.dp(54), root.context.dp(32))
+            root.removeViewAt(i)
+            root.addView(replacement, i, lp.applySwitchSize(root.context))
+            modernSwitch = replacement
+            i++
+        } else if (child is ViewGroup) {
+            if (child.id == android.R.id.widget_frame) {
+                modernSwitch = normalizeSwitchWidgetFrame(child, preference) ?: modernSwitch
+            } else {
+                modernSwitch = replaceLegacySwitches(child, preference) ?: modernSwitch
+            }
+            i++
+        } else {
+            i++
+        }
+    }
+    return modernSwitch
+}
+
+private fun normalizeSwitchWidgetFrame(
+    frame: ViewGroup,
+    preference: SwitchPreferenceCompat,
+): ModernSwitchView? {
+    var modernSwitch: ModernSwitchView? = null
+    var i = 0
+    while (i < frame.childCount) {
+        val child = frame.getChildAt(i)
+        if (child is ModernSwitchView && modernSwitch == null) {
+            modernSwitch = child
+            i++
+        } else {
+            frame.removeViewAt(i)
+        }
+    }
+    if (modernSwitch == null) {
+        modernSwitch = ModernSwitchView(frame.context, ModernSettingsPalette.from(frame.context))
+        frame.addView(
+            modernSwitch,
+            frame.modernSwitchLayoutParams(),
+        )
+    }
+    modernSwitch.bindPreference(preference)
+    return modernSwitch
+}
+
+private fun ViewGroup.modernSwitchLayoutParams(): ViewGroup.LayoutParams =
+    if (this is FrameLayout) {
+        FrameLayout.LayoutParams(context.dp(54), context.dp(32))
+    } else {
+        ViewGroup.LayoutParams(context.dp(54), context.dp(32))
+    }
+
+private fun ViewGroup.LayoutParams.applySwitchSize(context: Context): ViewGroup.LayoutParams {
+    width = context.dp(54)
+    height = context.dp(32)
+    return this
+}
+
 class SwitchPreferenceCompat(context: Context) : SwitchPreference(context) {
+    private var boundModernSwitch: ModernSwitchView? = null
+
     @Deprecated("Deprecated in Java")
     override fun onAttachedToHierarchy(preferenceManager: PreferenceManager?) {
 
@@ -32,7 +299,25 @@ class SwitchPreferenceCompat(context: Context) : SwitchPreference(context) {
     @Deprecated("Deprecated in Java")
     override fun onBindView(view: View) {
         super.onBindView(view)
-        setTextViewMultiLine(view as ViewGroup)
+        val viewGroup = view as ViewGroup
+        setTextViewMultiLine(viewGroup)
+        applyModernPreferenceStyle(viewGroup, rowStyle = ModernPreferenceStyleRegistry.styleFor(this))
+        boundModernSwitch = replaceLegacySwitches(viewGroup, this)
+        viewGroup.setOnClickListener(null)
+        viewGroup.isClickable = false
+        viewGroup.isFocusable = false
+    }
+
+    fun updateFromModernSwitch(checked: Boolean, rollback: () -> Unit) {
+        if (callChangeListener(checked)) {
+            isChecked = checked
+        } else {
+            rollback()
+        }
+    }
+
+    override fun onClick() {
+        boundModernSwitch?.performClick() ?: super.onClick()
     }
 }
 
@@ -46,6 +331,7 @@ class PreferenceCompat(context: Context) : Preference(context) {
     override fun onBindView(view: View) {
         super.onBindView(view)
         setTextViewMultiLine(view as ViewGroup)
+        applyModernPreferenceStyle(view, rowStyle = ModernPreferenceStyleRegistry.styleFor(this))
     }
 }
 
@@ -53,6 +339,12 @@ class PreferenceCategoryCompat(context: Context) : PreferenceCategory(context) {
     @Deprecated("Deprecated in Java")
     override fun onAttachedToHierarchy(preferenceManager: PreferenceManager?) {
 
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBindView(view: View) {
+        super.onBindView(view)
+        applyModernPreferenceStyle(view, true)
     }
 }
 

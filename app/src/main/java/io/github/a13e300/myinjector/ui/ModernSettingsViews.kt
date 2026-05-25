@@ -15,13 +15,16 @@ import android.os.Build
 import android.util.AttributeSet
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewConfiguration
 import android.view.animation.DecelerateInterpolator
 import android.widget.Checkable
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 internal fun Context.dp(value: Int): Int = dp(value.toFloat())
@@ -75,15 +78,15 @@ internal data class ModernSettingsPalette(
             return if (isNight) {
                 ModernSettingsPalette(
                     isLight = false,
-                    background = Color.rgb(18, 21, 27),
-                    surface = Color.rgb(31, 35, 44),
-                    surfaceOverlay = withAlpha(Color.rgb(49, 57, 72), 226),
-                    title = Color.rgb(238, 242, 248),
-                    summary = Color.rgb(158, 166, 179),
-                    divider = Color.rgb(55, 61, 72),
+                    background = Color.rgb(36, 36, 36),
+                    surface = Color.rgb(28, 28, 28),
+                    surfaceOverlay = withAlpha(Color.rgb(48, 48, 48), 226),
+                    title = Color.rgb(232, 232, 232),
+                    summary = Color.rgb(168, 168, 168),
+                    divider = Color.rgb(54, 54, 54),
                     accent = Color.rgb(126, 149, 184),
-                    switchOff = Color.rgb(67, 73, 84),
-                    button = Color.rgb(48, 54, 66),
+                    switchOff = Color.rgb(65, 65, 65),
+                    button = Color.rgb(55, 55, 55),
                     ripple = withAlpha(Color.WHITE, 24),
                 )
             } else {
@@ -146,7 +149,7 @@ internal class ModernSettingsHeader(
 
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
         val horizontal = context.dp(20)
-        val buttonSize = context.dp(46)
+        val buttonSize = context.dp(42)
         val buttonTop = topInset + context.dp(9)
 
         closeButton.layout(
@@ -302,7 +305,7 @@ internal class ModernChevronView(
 ) : View(context) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = palette.summary
-        strokeWidth = context.dp(3).toFloat()
+        strokeWidth = context.dp(2f).toFloat()
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
     }
@@ -327,12 +330,13 @@ internal class ModernCloseButton(
 ) : View(context) {
     private val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = palette.title
-        strokeWidth = context.dp(2.2f).toFloat()
+        strokeWidth = context.dp(2f).toFloat()
         strokeCap = Paint.Cap.ROUND
     }
 
     init {
-        background = ripple(rounded(palette.surface, context.dp(23)), palette.ripple)
+        val backgroundColor = if (palette.isLight) palette.surface else palette.button
+        background = ripple(rounded(backgroundColor, context.dp(21)), palette.ripple)
         elevation = context.dp(3).toFloat()
         isClickable = true
         isFocusable = true
@@ -342,7 +346,7 @@ internal class ModernCloseButton(
         super.onDraw(canvas)
         val centerX = width / 2f
         val centerY = height / 2f
-        val half = context.dp(7).toFloat()
+        val half = context.dp(6.2f).toFloat()
         canvas.drawLine(centerX - half, centerY - half, centerX + half, centerY + half, iconPaint)
         canvas.drawLine(centerX + half, centerY - half, centerX - half, centerY + half, iconPaint)
     }
@@ -353,8 +357,10 @@ internal class ModernSwitchView @JvmOverloads constructor(
     private val palette: ModernSettingsPalette,
     attrs: AttributeSet? = null,
 ) : View(context, attrs), Checkable {
+    internal var boundPreferenceKey: String? = null
     var onCheckedChangeListener: ((Boolean) -> Unit)? = null
 
+    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private val trackRect = RectF()
     private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val thumbPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -364,6 +370,9 @@ internal class ModernSwitchView @JvmOverloads constructor(
     private var checked = false
     private var progress = 0f
     private var animator: ValueAnimator? = null
+    private var downX = 0f
+    private var downProgress = 0f
+    private var dragging = false
 
     init {
         isClickable = true
@@ -397,6 +406,60 @@ internal class ModernSwitchView @JvmOverloads constructor(
         super.performClick()
         toggle()
         return true
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (!isEnabled) return false
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                animator?.cancel()
+                isPressed = true
+                downX = event.x
+                downProgress = progress
+                dragging = false
+                parent?.requestDisallowInterceptTouchEvent(true)
+                return true
+            }
+
+            MotionEvent.ACTION_MOVE -> {
+                val dx = event.x - downX
+                if (!dragging && abs(dx) > touchSlop) {
+                    dragging = true
+                }
+                if (dragging) {
+                    progress = (downProgress + dx / switchTravel()).coerceIn(0f, 1f)
+                    invalidate()
+                    parent?.requestDisallowInterceptTouchEvent(true)
+                }
+                return true
+            }
+
+            MotionEvent.ACTION_UP -> {
+                parent?.requestDisallowInterceptTouchEvent(false)
+                isPressed = false
+                if (dragging) {
+                    val oldValue = checked
+                    val newValue = progress >= 0.5f
+                    setCheckedInternal(newValue, animate = true)
+                    if (oldValue != newValue) {
+                        onCheckedChangeListener?.invoke(newValue)
+                    }
+                } else {
+                    performClick()
+                }
+                dragging = false
+                return true
+            }
+
+            MotionEvent.ACTION_CANCEL -> {
+                parent?.requestDisallowInterceptTouchEvent(false)
+                isPressed = false
+                dragging = false
+                setCheckedInternal(checked, animate = true)
+                return true
+            }
+        }
+        return super.onTouchEvent(event)
     }
 
     override fun isChecked(): Boolean = checked
@@ -435,6 +498,9 @@ internal class ModernSwitchView @JvmOverloads constructor(
             start()
         }
     }
+
+    private fun switchTravel(): Float =
+        (width - height).coerceAtLeast(context.dp(1)).toFloat()
 }
 
 private fun rounded(color: Int, radius: Int): GradientDrawable =
