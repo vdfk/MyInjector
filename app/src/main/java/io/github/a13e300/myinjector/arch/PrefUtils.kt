@@ -17,6 +17,8 @@ import android.preference.PreferenceCategory
 import android.preference.PreferenceGroup
 import android.preference.PreferenceManager
 import android.preference.SwitchPreference
+import android.os.Handler
+import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
 import android.widget.CompoundButton
@@ -64,6 +66,8 @@ internal data class RowStyle(
     val last: Boolean,
 )
 
+private val STYLE_TAG_KEY = 0x7F00_0001
+
 private fun applyModernPreferenceStyle(
     view: View,
     isCategory: Boolean = false,
@@ -72,16 +76,20 @@ private fun applyModernPreferenceStyle(
 ) {
     val palette = ModernSettingsPalette.from(view.context)
     if (styleRoot) {
-        view.background = if (isCategory) {
-            null
-        } else {
-            PreferenceRowBackground(view.context, palette, rowStyle).withNativeRipple(
-                view.context,
-                palette,
-                rowStyle,
-            )
-        }
         view.isPressed = false
+        val oldStyle = view.getTag(STYLE_TAG_KEY) as? RowStyle
+        if (oldStyle != rowStyle || view.background !is RippleDrawable) {
+            view.setTag(STYLE_TAG_KEY, rowStyle)
+            view.background = if (isCategory) {
+                null
+            } else {
+                PreferenceRowBackground(view.context, palette, rowStyle).withNativeRipple(
+                    view.context,
+                    palette,
+                    rowStyle,
+                )
+            }
+        }
         view.jumpDrawablesToCurrentState()
     }
     if (!isCategory && styleRoot) {
@@ -204,11 +212,14 @@ private fun ModernSwitchView.bindPreference(preference: SwitchPreferenceCompat) 
     onCheckedChangeListener = null
     isEnabled = preference.isEnabled
     isFocusable = false
+    isPressed = false
     alpha = if (preference.isEnabled) 1f else 0.55f
-    if (canAnimate) {
-        setChecked(preference.isChecked)
-    } else {
-        setCheckedImmediately(preference.isChecked)
+    if (!isAnimatingToward(preference.isChecked)) {
+        if (canAnimate) {
+            setChecked(preference.isChecked)
+        } else {
+            setCheckedImmediately(preference.isChecked)
+        }
     }
     onCheckedChangeListener = { checked ->
         preference.updateFromModernSwitch(checked) {
@@ -288,6 +299,34 @@ private fun ViewGroup.LayoutParams.applySwitchSize(context: Context): ViewGroup.
     return this
 }
 
+private object NotifyDeferrer {
+    private var depth = 0
+    private val suppressedNotifies = linkedSetOf<() -> Unit>()
+    private val handler = Handler(Looper.getMainLooper())
+
+    fun isActive(): Boolean = depth > 0
+
+    fun enter() { depth++ }
+
+    fun leave() {
+        depth--
+        if (depth == 0 && suppressedNotifies.isNotEmpty()) {
+            val pending = suppressedNotifies.toList()
+            suppressedNotifies.clear()
+            handler.postDelayed(
+                {
+                    pending.forEach { it() }
+                },
+                220L,
+            )
+        }
+    }
+
+    fun markSuppressed(notify: () -> Unit) {
+        if (depth > 0) suppressedNotifies.add(notify)
+    }
+}
+
 class SwitchPreferenceCompat(context: Context) : SwitchPreference(context) {
     private var boundModernSwitch: ModernSwitchView? = null
 
@@ -300,19 +339,41 @@ class SwitchPreferenceCompat(context: Context) : SwitchPreference(context) {
     override fun onBindView(view: View) {
         super.onBindView(view)
         val viewGroup = view as ViewGroup
+        viewGroup.isClickable = false
+        viewGroup.isFocusable = false
         setTextViewMultiLine(viewGroup)
         applyModernPreferenceStyle(viewGroup, rowStyle = ModernPreferenceStyleRegistry.styleFor(this))
         boundModernSwitch = replaceLegacySwitches(viewGroup, this)
-        viewGroup.setOnClickListener(null)
-        viewGroup.isClickable = false
-        viewGroup.isFocusable = false
+    }
+
+    override fun notifyChanged() {
+        if (NotifyDeferrer.isActive()) {
+            NotifyDeferrer.markSuppressed(::notifyChangedNow)
+            return
+        }
+        notifyChangedNow()
+    }
+
+    private fun notifyChangedNow() {
+        super.notifyChanged()
     }
 
     fun updateFromModernSwitch(checked: Boolean, rollback: () -> Unit) {
-        if (callChangeListener(checked)) {
-            isChecked = checked
-        } else {
-            rollback()
+        NotifyDeferrer.enter()
+        try {
+            if (callChangeListener(checked)) {
+                try {
+                    val field = javaClass.superclass.superclass.getDeclaredField("mChecked")
+                    field.isAccessible = true
+                    field.setBoolean(this, checked)
+                } catch (_: Exception) {
+                    isChecked = checked
+                }
+            } else {
+                rollback()
+            }
+        } finally {
+            NotifyDeferrer.leave()
         }
     }
 
@@ -332,6 +393,18 @@ class PreferenceCompat(context: Context) : Preference(context) {
         super.onBindView(view)
         setTextViewMultiLine(view as ViewGroup)
         applyModernPreferenceStyle(view, rowStyle = ModernPreferenceStyleRegistry.styleFor(this))
+    }
+
+    override fun notifyChanged() {
+        if (NotifyDeferrer.isActive()) {
+            NotifyDeferrer.markSuppressed(::notifyChangedNow)
+            return
+        }
+        notifyChangedNow()
+    }
+
+    private fun notifyChangedNow() {
+        super.notifyChanged()
     }
 }
 

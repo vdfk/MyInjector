@@ -371,8 +371,11 @@ internal class ModernSwitchView @JvmOverloads constructor(
     private var progress = 0f
     private var animator: ValueAnimator? = null
     private var downX = 0f
+    private var downY = 0f
     private var downProgress = 0f
     private var dragging = false
+    private var cancelClick = false
+    private var inClick = false
 
     init {
         isClickable = true
@@ -403,8 +406,14 @@ internal class ModernSwitchView @JvmOverloads constructor(
     }
 
     override fun performClick(): Boolean {
-        super.performClick()
-        toggle()
+        if (inClick) return true
+        inClick = true
+        try {
+            super.performClick()
+            toggle()
+        } finally {
+            inClick = false
+        }
         return true
     }
 
@@ -415,21 +424,34 @@ internal class ModernSwitchView @JvmOverloads constructor(
                 animator?.cancel()
                 isPressed = true
                 downX = event.x
+                downY = event.y
                 downProgress = progress
                 dragging = false
-                parent?.requestDisallowInterceptTouchEvent(true)
+                cancelClick = false
                 return true
             }
 
             MotionEvent.ACTION_MOVE -> {
                 val dx = event.x - downX
-                if (!dragging && abs(dx) > touchSlop) {
-                    dragging = true
+                val dy = event.y - downY
+                val absDx = abs(dx)
+                val absDy = abs(dy)
+                if (!dragging) {
+                    if (absDy > touchSlop && absDy > absDx) {
+                        cancelClick = true
+                        isPressed = false
+                        parent?.requestDisallowInterceptTouchEvent(false)
+                        return false
+                    }
+                    if (absDx > touchSlop && absDx > absDy) {
+                        dragging = true
+                        cancelClick = false
+                        parent?.requestDisallowInterceptTouchEvent(true)
+                    }
                 }
                 if (dragging) {
                     progress = (downProgress + dx / switchTravel()).coerceIn(0f, 1f)
                     invalidate()
-                    parent?.requestDisallowInterceptTouchEvent(true)
                 }
                 return true
             }
@@ -444,10 +466,11 @@ internal class ModernSwitchView @JvmOverloads constructor(
                     if (oldValue != newValue) {
                         onCheckedChangeListener?.invoke(newValue)
                     }
-                } else {
+                } else if (!cancelClick) {
                     performClick()
                 }
                 dragging = false
+                cancelClick = false
                 return true
             }
 
@@ -455,12 +478,16 @@ internal class ModernSwitchView @JvmOverloads constructor(
                 parent?.requestDisallowInterceptTouchEvent(false)
                 isPressed = false
                 dragging = false
+                cancelClick = false
                 setCheckedInternal(checked, animate = true)
                 return true
             }
         }
         return super.onTouchEvent(event)
     }
+
+    internal fun isAnimatingToward(targetChecked: Boolean): Boolean =
+        checked == targetChecked && animator != null
 
     override fun isChecked(): Boolean = checked
 

@@ -16,6 +16,7 @@ import android.os.Bundle
 import android.preference.ListPreference
 import android.preference.MultiSelectListPreference
 import android.preference.Preference
+import android.preference.PreferenceCategory
 import android.preference.PreferenceGroup
 import android.preference.PreferenceScreen
 import android.text.Editable
@@ -118,6 +119,7 @@ abstract class SettingDialog(val activityCtx: Context) : Preference.OnPreference
         adapter.preferenceList = preferences
         adapter.notifyDataSetChanged()
         listView.forceSetSelection(0)
+        updateListViewHeight()
     }
 
     private fun applyCardGrouping(group: PreferenceGroup) {
@@ -351,13 +353,58 @@ abstract class SettingDialog(val activityCtx: Context) : Preference.OnPreference
             listView,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                min(
-                    context.resources.displayMetrics.heightPixels * 58 / 100,
-                    520.sp2px(context.resources).toInt(),
-                ),
+                listHeightForCurrentItems(),
             ),
         )
         return contentView
+    }
+
+    private fun updateListViewHeight() {
+        val params = listView.layoutParams ?: return
+        val height = listHeightForCurrentItems()
+        if (params.height == height) return
+        params.height = height
+        listView.layoutParams = params
+    }
+
+    private fun listHeightForCurrentItems(): Int {
+        val maxHeight = maxListHeight()
+        val contentHeight = estimatedListContentHeight()
+        val needsScroll = contentHeight > maxHeight
+        listView.isVerticalFadingEdgeEnabled = needsScroll
+        return min(contentHeight, maxHeight)
+    }
+
+    private fun maxListHeight(): Int =
+        min(
+            context.resources.displayMetrics.heightPixels * 58 / 100,
+            520.sp2px(context.resources).toInt(),
+        )
+
+    private fun estimatedListContentHeight(): Int {
+        var height = listView.paddingTop + listView.paddingBottom
+        val preferences = adapter.preferenceList
+        for (preference in preferences) {
+            height += if (preference is PreferenceCategory) {
+                context.dp(46)
+            } else {
+                estimatedPreferenceRowHeight(preference)
+            }
+            if (height > maxListHeight()) return height
+        }
+        return height.coerceAtLeast(context.dp(1))
+    }
+
+    private fun estimatedPreferenceRowHeight(preference: Preference): Int {
+        val summary = preference.summary?.toString().orEmpty()
+        if (summary.isBlank()) return context.dp(58)
+
+        val contentWidth = context.resources.displayMetrics.widthPixels - context.dp(48 + 48 + 52)
+        val charsPerLine = (contentWidth / context.dp(7.2f)).coerceAtLeast(12)
+        val summaryLines = summary.lineSequence().sumOf { line ->
+            (line.length / charsPerLine + 1).coerceAtLeast(1)
+        }
+        return context.dp(58 + (summaryLines - 1).coerceAtLeast(0) * 18)
     }
 
     protected open fun onConfigureActions(actions: MutableList<ModernInjectedDialogAction>) {
